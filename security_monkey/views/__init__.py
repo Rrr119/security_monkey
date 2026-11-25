@@ -61,6 +61,21 @@ AUDIT_FIELDS = {
 
 ## Single Use Marshal Objects ##
 
+# Used by ItemChangeHistory, ChangeHistoryList
+CHANGE_RECORD_FIELDS = {
+    'id': fields.Integer,
+    'item_id': fields.Integer,
+    'revision_id': fields.Integer,
+    'previous_revision_id': fields.Integer,
+    'change_type': fields.String,
+    'diff': fields.Raw,
+    'old_config': fields.Raw,
+    'new_config': fields.Raw,
+    'actor': fields.String,
+    'actor_source': fields.String,
+    'date_created': fields.String
+}
+
 # SINGLE USE - RevisionGet
 REVISION_COMMENT_FIELDS = {
     'id': fields.Integer,

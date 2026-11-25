@@ -418,7 +418,7 @@ class Watcher(object, metaclass=WatcherType):
                                                                     source_watcher=self))
 
             persist_item(item, db_item, self.technology, self.current_account[0], complete_hash,
-                         durable_hash, is_durable)
+                         durable_hash, is_durable, source_watcher=self)
 
         return durable_items
 

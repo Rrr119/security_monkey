@@ -21,7 +21,7 @@ from six import text_type
 
 from security_monkey.account_manager import bulk_disable_accounts, bulk_enable_accounts
 from security_monkey.common.s3_canonical import get_canonical_ids
-from security_monkey.datastore import clear_old_exceptions, store_exception, AccountType, ItemAudit, NetworkWhitelistEntry, delete_item_revisions_by_date
+from security_monkey.datastore import clear_old_exceptions, store_exception, AccountType, ItemAudit, NetworkWhitelistEntry, delete_item_revisions_by_date, delete_old_change_records
 
 from security_monkey import app, db, jirasync
 from security_monkey.common.route53 import Route53Service
@@ -200,6 +200,19 @@ def clear_expired_exceptions():
     app.logger.info("Clearing out exceptions that have an expired TTL...")
     clear_old_exceptions()
     app.logger.info("Completed clearing out exceptions that have an expired TTL.")
+
+
+@manager.command
+@manager.option('-d', '--retention-days', dest='retention_days', type=int, required=False, default=None)
+def purge_old_change_records(retention_days):
+    """
+    Deletes configuration change records older than the retention window.
+    The window is never shorter than 90 days, so 90 days of history are
+    always preserved. Defaults to the CHANGE_HISTORY_RETENTION_DAYS config.
+    """
+    app.logger.info("Purging change records outside of the retention window...")
+    deleted = delete_old_change_records(retention_days)
+    app.logger.info("Completed purging change records. {} records deleted.".format(deleted))
 
 
 @manager.command

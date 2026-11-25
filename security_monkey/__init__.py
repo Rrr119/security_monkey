@@ -178,6 +178,11 @@ from security_monkey.views.revision import RevisionGet
 api.add_resource(RevisionList, '/api/1/revisions')
 api.add_resource(RevisionGet, '/api/1/revisions/<int:revision_id>')
 
+from security_monkey.views.change_history import ItemChangeHistory
+from security_monkey.views.change_history import ChangeHistoryList
+api.add_resource(ItemChangeHistory, '/api/1/items/<int:item_id>/changehistory')
+api.add_resource(ChangeHistoryList, '/api/1/changehistory')
+
 from security_monkey.views.revision_comment import RevisionCommentPost
 from security_monkey.views.revision_comment import RevisionCommentGet
 from security_monkey.views.revision_comment import RevisionCommentDelete

@@ -112,6 +112,12 @@ For many of the same reasons we want want a random SECRET\_KEY we want to ensure
 
 You can use the same method used to generate the SECRET\_KEY to generate the SECURITY\_PASSWORD\_SALT
 
+### CHANGE\_HISTORY\_RETENTION\_DAYS
+
+Security Monkey records an audit trail of every configuration change: a structured diff, full before/after snapshots of the configuration, and the operator the change is attributed to (from CloudTrail when a correlating event is available, otherwise the watcher that observed the change).
+
+This option controls how many days of change history are kept and are returned by the history queries (`GET /api/1/items/<id>/changehistory` and `GET /api/1/changehistory`). It defaults to 90 days, and values below 90 are treated as 90 so that 90 days of history are never lost. Old records can be purged with `python manage.py purge_old_change_records`, which enforces the same 90 day floor.
+
 ### Additional Options
 
 As Security Monkey uses Flask-Security for authentication see .. \_Flask-Security: <https://pythonhosted.org/Flask-Security/configuration.html> for additional configuration options.

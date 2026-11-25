@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid38835",
+  "B": "/home/dev/feedback/uid38835",
+  "sha": "7f5d265eff4cf81e7a19d5d655cf1b7519da2bc0",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "Netflix",
+    "repo": "security_monkey",
+    "sha": "7f5d265eff4cf81e7a19d5d655cf1b7519da2bc0"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "security_monkey",
+    "cloneUrl": "https://github.com/Rrr119/security_monkey.git"
+  },
+  "at": "2026-11-25T19:32:16.552Z"
+}

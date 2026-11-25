@@ -109,6 +109,11 @@ WTF_CSRF_METHODS = ['DELETE', 'POST', 'PUT', 'PATCH']
 # "NONE", "SUMMARY", or "FULL"
 SECURITYGROUP_INSTANCE_DETAIL = 'FULL'
 
+# Number of days of configuration change history (diffs, before/after state
+# and operator attribution) kept queryable per resource. Values below 90 are
+# treated as 90 so that 90 days of history are never lost.
+CHANGE_HISTORY_RETENTION_DAYS = 90
+
 # To alert on IAM Roles/Users/Groups and Managed Policies with Write capabilities
 # on sensitive services, enumerate the services here:
 # DEFAULT_SENSITIVE = ['cloudhsm', 'cloudtrail', 'acm', 'config', 'kms', 'lambda', 'organizations', 'rds', 'route53', 'shield']

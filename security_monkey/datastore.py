@@ -28,6 +28,19 @@ from sqlalchemy import BigInteger, desc
 from .auth.models import RBACUserMixin
 
 from security_monkey import db, app
+from security_monkey.common.change_record import (
+    CHANGE_CREATED,
+    CHANGE_UPDATED,
+    CHANGE_DELETED,
+    ACTOR_SOURCE_CLOUDTRAIL,
+    ACTOR_SOURCE_WATCHER,
+    ACTOR_SOURCE_UNKNOWN,
+    ATTRIBUTION_WINDOW_SECONDS,
+    DEFAULT_RETENTION_DAYS,
+    compute_config_diff,
+    actor_from_cloudtrail,
+    retention_cutoff,
+)
 
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Unicode, Text
@@ -301,6 +314,8 @@ class Item(db.Model):
     issues = relationship("ItemAudit", secondary=issue_item_association, back_populates="sub_items",
                           single_parent=True, cascade="all, delete, delete-orphan")
     exceptions = relationship("ExceptionLogs", backref="item", cascade="all, delete, delete-orphan")
+    change_records = relationship("ItemRevisionDiff", backref="item", cascade="all, delete, delete-orphan",
+                                  order_by="ItemRevisionDiff.date_created")
 
     @hybrid_property
     def score(self):
@@ -398,6 +413,31 @@ class ItemRevision(db.Model):
                             order_by="ItemRevisionComment.date_created")
     cloudtrail_entries = relationship("CloudTrailEntry", backref="revision", cascade="all, delete, delete-orphan",
                                       order_by="CloudTrailEntry.event_time")
+
+
+class ItemRevisionDiff(db.Model):
+    """
+    An audit record of a single configuration change to an item.
+
+    One record is written every time a new (non-ephemeral) ItemRevision is
+    stored. The record keeps a structured diff of what changed, full
+    before/after snapshots of the configuration so either state can be
+    restored even if the underlying revisions are later purged, and the
+    operator the change is attributed to (from CloudTrail when available,
+    otherwise the watcher that observed the change).
+    """
+    __tablename__ = "itemrevisiondiff"
+    id = Column(Integer, primary_key=True)
+    item_id = Column(Integer, ForeignKey("item.id"), nullable=False, index=True)
+    revision_id = Column(Integer, ForeignKey("itemrevision.id"), nullable=True, index=True)
+    previous_revision_id = Column(Integer, nullable=True)
+    change_type = Column(String(16), nullable=False, index=True)
+    diff = deferred(Column(JSON))
+    old_config = deferred(Column(JSON))
+    new_config = deferred(Column(JSON))
+    actor = Column(String(512), nullable=True, index=True)
+    actor_source = Column(String(64), nullable=False)
+    date_created = Column(DateTime(), default=datetime.datetime.utcnow, nullable=False, index=True)
 
 
 class CloudTrailEntry(db.Model):
@@ -632,6 +672,7 @@ class Datastore(object):
             ephemeral_paths = []
         item.latest_revision_durable_hash = durable_hash(config, ephemeral_paths)
 
+        previous_revision = item.revisions.first()
         if ephemeral:
             item_revision = item.revisions.first()
             item_revision.config = config
@@ -658,7 +699,46 @@ class Datastore(object):
         db.session.commit()
 
         self._set_latest_revision(item)
+        if not ephemeral:
+            record_item_change(item, item_revision, previous_revision, active_flag, config,
+                               source_watcher=source_watcher)
         return item
+
+    def get_change_history(self, ctype=None, region=None, account=None, name=None,
+                           item_id=None, days=None, start_date=None, end_date=None):
+        """
+        Time-series query of configuration change records.
+
+        Filters are optional and combine. By default returns records from the
+        last ``days`` days (the CHANGE_HISTORY_RETENTION_DAYS config, 90 days
+        unless overridden). Results are ordered oldest to newest so the full
+        history of a resource can be replayed.
+        """
+        query = ItemRevisionDiff.query.join((Item, Item.id == ItemRevisionDiff.item_id))
+
+        if item_id is not None:
+            query = query.filter(ItemRevisionDiff.item_id == item_id)
+        if ctype:
+            query = query.join((Technology, Technology.id == Item.tech_id)) \
+                .filter(Technology.name == ctype)
+        if account:
+            query = query.join((Account, Account.id == Item.account_id)) \
+                .filter(Account.name == account)
+        if region:
+            query = query.filter(Item.region == region)
+        if name:
+            query = query.filter(Item.name == name)
+
+        if start_date is None:
+            if days is None:
+                days = app.config.get('CHANGE_HISTORY_RETENTION_DAYS', DEFAULT_RETENTION_DAYS)
+            start_date = datetime.datetime.utcnow() - datetime.timedelta(days=int(days))
+        query = query.filter(ItemRevisionDiff.date_created >= start_date)
+
+        if end_date is not None:
+            query = query.filter(ItemRevisionDiff.date_created <= end_date)
+
+        return query.order_by(ItemRevisionDiff.date_created.asc()).all()
 
     def _set_latest_revision(self, item):
         latest_revision = item.revisions.first()
@@ -727,6 +807,99 @@ class Datastore(object):
             db.session.commit()
             db.session.refresh(item)
         return item
+
+
+def attribute_actor(item, source_watcher=None, changed_at=None):
+    """
+    Attribute a configuration change to an operator.
+
+    Prefers a correlating CloudTrail entry for the item (who actually made
+    the API call). Falls back to the watcher that observed the change so
+    every change record always carries some attribution.
+
+    :return: (actor, actor_source) tuple.
+    """
+    changed_at = changed_at or datetime.datetime.utcnow()
+    window_start = changed_at - datetime.timedelta(seconds=ATTRIBUTION_WINDOW_SECONDS)
+    entries = CloudTrailEntry.query \
+        .filter(CloudTrailEntry.item_id == item.id) \
+        .filter(CloudTrailEntry.event_time <= changed_at) \
+        .filter(CloudTrailEntry.event_time >= window_start) \
+        .order_by(desc(CloudTrailEntry.event_time)) \
+        .all()
+
+    actor, _, _ = actor_from_cloudtrail(entries, changed_at)
+    if actor:
+        return actor, ACTOR_SOURCE_CLOUDTRAIL
+
+    if source_watcher is not None:
+        return "watcher:{}".format(source_watcher.index), ACTOR_SOURCE_WATCHER
+
+    return None, ACTOR_SOURCE_UNKNOWN
+
+
+def record_item_change(item, item_revision, previous_revision, active_flag, config,
+                       source_watcher=None):
+    """
+    Write an ItemRevisionDiff audit record for a configuration change.
+
+    Called by every code path that persists a new durable revision
+    (Datastore.store and datastore_utils.persist_item), so all watchers and
+    auditors get change tracking without any modification.
+
+    :return: The created ItemRevisionDiff.
+    """
+    old_config = previous_revision.config if previous_revision else {}
+
+    if previous_revision is None:
+        change_type = CHANGE_CREATED
+    elif not active_flag:
+        change_type = CHANGE_DELETED
+    else:
+        change_type = CHANGE_UPDATED
+
+    actor, actor_source = attribute_actor(item, source_watcher)
+
+    record = ItemRevisionDiff(
+        item_id=item.id,
+        revision_id=item_revision.id,
+        previous_revision_id=previous_revision.id if previous_revision else None,
+        change_type=change_type,
+        diff=compute_config_diff(old_config, config),
+        old_config=old_config,
+        new_config=config,
+        actor=actor,
+        actor_source=actor_source)
+    db.session.add(record)
+    db.session.commit()
+
+    app.logger.debug("Recorded {} change for item {}/{} attributed to {} ({})".format(
+        change_type, item.id, item.name, actor, actor_source))
+    return record
+
+
+def delete_old_change_records(retention_days=None):
+    """
+    Delete change records that have aged out of the retention window.
+
+    The retention window is never shorter than MIN_RETENTION_DAYS (90 days),
+    so querying 90 days of history never loses records regardless of the
+    requested retention.
+
+    :return: number of records deleted.
+    """
+    if retention_days is None:
+        retention_days = app.config.get('CHANGE_HISTORY_RETENTION_DAYS', DEFAULT_RETENTION_DAYS)
+    cutoff = retention_cutoff(retention_days)
+
+    records = ItemRevisionDiff.query.filter(ItemRevisionDiff.date_created < cutoff).all()
+    count = len(records)
+    for record in records:
+        db.session.delete(record)
+    db.session.commit()
+
+    app.logger.info("[-] Deleted {} change records older than {}.".format(count, cutoff))
+    return count
 
 
 def store_exception(source, location, exception, ttl=None):

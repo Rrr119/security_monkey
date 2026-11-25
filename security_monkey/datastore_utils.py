@@ -8,7 +8,8 @@ from security_monkey.datastore import Item, ItemRevision, hash_item
 prims = [int, str, text_type, bool, float, type(None)]
 
 
-def persist_item(item, db_item, technology, account, complete_hash, durable_hash, durable):
+def persist_item(item, db_item, technology, account, complete_hash, durable_hash, durable,
+                 source_watcher=None):
     if not db_item:
         if account.account_type.name != "AWS":
             db_item = create_item(item, technology, account)
@@ -30,6 +31,7 @@ def persist_item(item, db_item, technology, account, complete_hash, durable_hash
         return
 
     # Create the new revision
+    previous_revision = db_item.revisions.first() if db_item.id else None
     if durable:
         revision = create_revision(item.config, db_item)
         db_item.revisions.append(revision)
@@ -59,6 +61,8 @@ def persist_item(item, db_item, technology, account, complete_hash, durable_hash
         datastore.db.session.add(revision)
         datastore.db.session.add(db_item)
         datastore.db.session.commit()
+        datastore.record_item_change(db_item, revision, previous_revision, revision.active,
+                                     item.config, source_watcher=source_watcher)
 
 
 def is_active(config):
